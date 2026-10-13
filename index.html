@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crosswind Calculator</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --card: #ffffff; --text: #1b2430; --muted: #5f6b7a;
+    --line: #d9dee5; --accent: #1f6feb; --ok: #1a7f37; --warn: #b35900; --bad: #cf222e;
+    --runway: #3a4350; --wind: #1f6feb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1419; --card: #182029; --text: #e6edf3; --muted: #9aa7b4;
+      --line: #2d3843; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+      --runway: #8b97a5; --wind: #58a6ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  label { display: block; font-size: .9rem; color: var(--muted); margin: 12px 0 4px; }
+  label:first-of-type { margin-top: 0; }
+  input {
+    width: 100%; padding: 10px 12px; font-size: 1.05rem; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .hint { font-size: .8rem; color: var(--muted); margin-top: 4px; }
+  .error { color: var(--bad); font-size: .9rem; min-height: 1.2em; margin-top: 8px; }
+  svg { width: 100%; height: auto; display: block; }
+  .results { margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 680px) { .results { grid-template-columns: 1fr; } }
+  .rwy { border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .rwy.best { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+  .rwy h3 { margin: 0 0 8px; font-size: 1.1rem; display: flex; justify-content: space-between; align-items: center; }
+  .tag { font-size: .7rem; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--ok); color: #fff; }
+  .kv { display: flex; justify-content: space-between; padding: 3px 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv b { font-variant-numeric: tabular-nums; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .note { font-size: .8rem; color: var(--muted); margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Crosswind Calculator</h1>
+  <p class="sub">Enter a runway and the wind to get the headwind, tailwind and crosswind components for both runway directions.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Input</h2>
+      <label for="rwy">Runway designator</label>
+      <input id="rwy" value="09" inputmode="numeric" placeholder="e.g. 09, 27L, 36">
+      <div class="hint">01–36, optionally with L / C / R. The reciprocal runway is worked out automatically.</div>
+
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label for="wdir">Wind direction (°)</label>
+          <input id="wdir" type="number" min="0" max="360" value="130">
+        </div>
+        <div>
+          <label for="wspd">Wind speed (kt)</label>
+          <input id="wspd" type="number" min="0" value="15">
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="gust">Gust (kt, optional)</label>
+          <input id="gust" type="number" min="0" placeholder="—">
+        </div>
+        <div>
+          <label for="limit">Max crosswind (kt)</label>
+          <input id="limit" type="number" min="0" value="20">
+        </div>
+      </div>
+      <div class="error" id="err"></div>
+    </section>
+
+    <section class="card">
+      <h2>Picture</h2>
+      <svg id="diagram" viewBox="-130 -130 260 260" role="img" aria-label="Runway and wind diagram"></svg>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2>Components</h2>
+    <div class="results" id="results"></div>
+    <p class="note">
+      Simplified: the runway heading is taken as designator × 10° and the wind is assumed to be in the same reference
+      (magnetic vs. true is not corrected). Gust components are calculated with the full gust value. For illustration only, not for operational use.
+    </p>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const rad = d => d * Math.PI / 180;
+
+function parseRunway(text) {
+  const m = String(text).trim().toUpperCase().match(/^(\d{1,2})\s*([LCR]?)$/);
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  if (num < 1 || num > 36) return null;
+  const recipNum = ((num + 17) % 36) + 1;
+  const recipSide = { L: "R", R: "L", C: "C", "": "" }[m[2]];
+  const pad = n => String(n).padStart(2, "0");
+  return [
+    { name: pad(num) + m[2], hdg: num * 10 },
+    { name: pad(recipNum) + recipSide, hdg: recipNum * 10 }
+  ];
+}
+
+// Positive headwind = wind on the nose; negative = tailwind.
+// Positive crosswind = wind from the right.
+function components(hdg, dir, spd) {
+  const a = rad(dir - hdg);
+  return { head: spd * Math.cos(a), cross: spd * Math.sin(a) };
+}
+
+function fmtHead(v) {
+  const r = Math.round(Math.abs(v));
+  if (r === 0) return { text: "0 kt", cls: "" };
+  return v > 0 ? { text: r + " kt headwind", cls: "ok" } : { text: r + " kt tailwind", cls: "bad" };
+}
+function fmtCross(v, limit) {
+  const r = Math.round(Math.abs(v));
+  const side = r === 0 ? "" : (v > 0 ? " from right" : " from left");
+  let cls = "ok";
+  if (limit > 0 && r > limit) cls = "bad";
+  else if (limit > 0 && r > limit * 0.8) cls = "warn";
+  return { text: r + " kt" + side, cls };
+}
+
+function drawDiagram(rwys, dir) {
+  const svg = $("diagram");
+  const css = getComputedStyle(document.documentElement);
+  const runwayCol = css.getPropertyValue("--runway").trim();
+  const windCol = css.getPropertyValue("--wind").trim();
+  const muted = css.getPropertyValue("--muted").trim();
+  const line = css.getPropertyValue("--line").trim();
+
+  let s = `<circle r="120" fill="none" stroke="${line}"/>`;
+  for (const [t, a] of [["N", 0], ["E", 90], ["S", 180], ["W", 270]]) {
+    const x = 108 * Math.sin(rad(a)), y = -108 * Math.cos(rad(a));
+    s += `<text x="${x}" y="${y}" fill="${muted}" font-size="12" text-anchor="middle" dominant-baseline="middle">${t}</text>`;
+  }
+  if (rwys) {
+    const h = rwys[0].hdg;
+    s += `<g transform="rotate(${h})">
+      <rect x="-9" y="-85" width="18" height="170" rx="2" fill="${runwayCol}"/>
+      <line x1="0" y1="-70" x2="0" y2="70" stroke="#fff" stroke-width="1.5" stroke-dasharray="8 6"/>
+      <text x="0" y="78" fill="#fff" font-size="9" font-weight="700" text-anchor="middle" transform="rotate(180 0 78)" dominant-baseline="middle">${rwys[0].name}</text>
+      <text x="0" y="-78" fill="#fff" font-size="9" font-weight="700" text-anchor="middle" dominant-baseline="middle">${rwys[1].name}</text>
+    </g>`;
+  }
+  if (dir !== null) {
+    // Arrow comes FROM the wind direction, pointing towards the centre.
+    s += `<g transform="rotate(${dir})">
+      <line x1="0" y1="-118" x2="0" y2="-30" stroke="${windCol}" stroke-width="4" stroke-linecap="round"/>
+      <path d="M0 -22 L-9 -38 L9 -38 Z" fill="${windCol}"/>
+    </g>`;
+  }
+  svg.innerHTML = s;
+}
+
+function update() {
+  const rwys = parseRunway($("rwy").value);
+  const dir = parseFloat($("wdir").value);
+  const spd = parseFloat($("wspd").value);
+  const gustRaw = $("gust").value.trim();
+  const gust = gustRaw === "" ? null : parseFloat(gustRaw);
+  const limit = parseFloat($("limit").value) || 0;
+
+  const errs = [];
+  if (!rwys) errs.push("Runway must be 01–36, optionally followed by L, C or R.");
+  if (!(dir >= 0 && dir <= 360)) errs.push("Wind direction must be 0–360°.");
+  if (!(spd >= 0)) errs.push("Wind speed must be 0 or more.");
+  if (gust !== null && !(gust >= spd)) errs.push("Gust must be at least the wind speed.");
+  $("err").textContent = errs.join(" ");
+
+  drawDiagram(rwys, dir >= 0 && dir <= 360 ? dir : null);
+  if (errs.length) { $("results").innerHTML = ""; return; }
+
+  const data = rwys.map(r => ({ ...r, c: components(r.hdg, dir, spd), g: gust !== null ? components(r.hdg, dir, gust) : null }));
+  const best = data[0].c.head >= data[1].c.head ? 0 : 1;
+
+  $("results").innerHTML = data.map((r, i) => {
+    const hw = fmtHead(r.c.head), xw = fmtCross(r.c.cross, limit);
+    let gustRows = "";
+    if (r.g) {
+      const gh = fmtHead(r.g.head), gx = fmtCross(r.g.cross, limit);
+      gustRows = `<div class="kv"><span>In gusts</span><b class="${gh.cls}">${gh.text}</b></div>
+                  <div class="kv"><span></span><b class="${gx.cls}">${gx.text}</b></div>`;
+    }
+    return `<div class="rwy ${i === best && spd > 0 ? "best" : ""}">
+      <h3><span>RWY ${r.name} <small style="color:var(--muted);font-weight:400">${String(r.hdg).padStart(3, "0")}°</small></span>
+        ${i === best && spd > 0 ? '<span class="tag">Preferred</span>' : ""}</h3>
+      <div class="kv"><span>Head/tail</span><b class="${hw.cls}">${hw.text}</b></div>
+      <div class="kv"><span>Crosswind</span><b class="${xw.cls}">${xw.text}</b></div>
+      ${gustRows}
+    </div>`;
+  }).join("");
+}
+
+for (const id of ["rwy", "wdir", "wspd", "gust", "limit"]) $(id).addEventListener("input", update);
+update();
+</script>
+</body>
+</html>
